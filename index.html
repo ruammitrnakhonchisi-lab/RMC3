@@ -111,11 +111,13 @@
     z-index: 50; white-space: nowrap;
   }
 
-  .filters { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
   .filters select, .filters input {
     font-family: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px;
     border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
   }
+  .date-filter-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+  #dateRangeFilter { margin-bottom: 16px; }
 
   /* category tabs -- one shared filter that drives KPIs + chart + table together */
   .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
@@ -163,6 +165,16 @@
     <div id="status" class="loading">กำลังดึงข้อมูล…</div>
 
     <div id="content" style="display:none;">
+      <div class="filters" id="dateRangeFilter">
+        <label class="date-filter-label">ช่วงวันที่ทดสอบ
+          <input id="dateFrom" type="date">
+        </label>
+        <label class="date-filter-label">ถึง
+          <input id="dateTo" type="date">
+        </label>
+        <button class="btn-outline" id="dateRangeClear" type="button">ล้างช่วงวันที่</button>
+      </div>
+
       <div class="tabs" id="categoryTabs"></div>
 
       <div class="kpi-row" id="kpiRow"></div>
@@ -177,7 +189,7 @@
       <div class="card">
         <div class="card-head">
           <div>
-            <h2>แนวโน้มกำลังอัดรายวัน (15 วันล่าสุด) แยกตามประเภท</h2>
+            <h2 id="trendTitle">แนวโน้มกำลังอัดรายวัน (15 วันล่าสุด) แยกตามประเภท</h2>
             <p class="sub" id="trendSub">หน่วย: กก./ตร.ซม. (ksc) — ค่าเฉลี่ยต่อวัน รวมทุกประเภทชิ้นงาน (ไม่ผูกกับแท็บด้านบน)</p>
           </div>
           <button class="btn-outline" id="exportTrendBtn" type="button">ส่งออกเป็นภาพ (PNG)</button>
@@ -243,6 +255,28 @@
   // ประเภทชิ้นงาน -> index สี คงที่ตลอดทั้งหน้า (คำนวณครั้งเดียวจากข้อมูลทั้งหมด)
   // เพื่อให้สีของแต่ละประเภทเหมือนกันทุกกราฟ/ทุกแท็บ ไม่ขึ้นกับลำดับที่ถูกกรอง
   let categoryColorIndex = {};
+  // ช่วงวันที่ที่เลือก (YYYY-MM-DD) -- "" = ไม่จำกัด มีผลกับ KPI/กราฟแท่ง/ตาราง/แท็บ/กราฟแนวโน้มทั้งหมด
+  let rangeFrom = "";
+  let rangeTo = "";
+
+  function hasCustomRange() {
+    return !!(rangeFrom || rangeTo);
+  }
+
+  function applyDateRange(rows) {
+    if (!hasCustomRange()) return rows;
+    return rows.filter(r => {
+      if (!r.test_date) return false;
+      if (rangeFrom && r.test_date < rangeFrom) return false;
+      if (rangeTo && r.test_date > rangeTo) return false;
+      return true;
+    });
+  }
+
+  // กราฟแนวโน้มรวมทุกประเภทเสมอ (ไม่ผูกกับแท็บ) แต่ผูกกับช่วงวันที่ที่เลือก
+  function trendChartRows() {
+    return applyDateRange(allRows);
+  }
 
   function colorFor(type) {
     const idx = categoryColorIndex[type] ?? 0;
@@ -404,7 +438,7 @@
   // ------------------------------------------------------------------
   // กราฟแนวโน้มรายวัน 15 วันล่าสุด แยกตามประเภท (รวมทุกประเภทเสมอ ไม่ผูกกับแท็บ)
   // ------------------------------------------------------------------
-  function computeTrendData(rows) {
+  function computeTrendData(rows, capLast15 = true) {
     const byDate = new Map(); // date -> { type: {sum, count} }
     for (const r of rows) {
       if (r.strength_ksc === null || r.strength_ksc === undefined) continue;
@@ -417,7 +451,10 @@
       cell[type].count += 1;
     }
 
-    const dates = [...byDate.keys()].sort().slice(-15); // 15 วันล่าสุดที่มีข้อมูลจริง
+    // ถ้าไม่ได้เลือกช่วงวันที่เอง (capLast15 = true) จะโชว์แค่ 15 วันล่าสุดที่มีข้อมูลจริง
+    // แต่ถ้าผู้ใช้เลือกช่วงวันที่เองแล้ว จะโชว์ทุกวันในช่วงที่มีข้อมูล ไม่ตัดเหลือ 15
+    let dates = [...byDate.keys()].sort();
+    if (capLast15) dates = dates.slice(-15);
     const typesPresent = new Set();
     dates.forEach(d => Object.keys(byDate.get(d)).forEach(t => typesPresent.add(t)));
     // เรียงตามลำดับสีคงที่ของทั้งหน้า เพื่อให้ตรงกับ legend ของกราฟแท่งและแท็บ
@@ -508,7 +545,16 @@
   }
 
   function buildTrendChart(rows) {
-    const model = computeTrendData(rows);
+    const custom = hasCustomRange();
+    const model = computeTrendData(rows, !custom);
+
+    document.getElementById("trendTitle").textContent = custom
+      ? "แนวโน้มกำลังอัดรายวัน (ช่วงที่เลือก) แยกตามประเภท"
+      : "แนวโน้มกำลังอัดรายวัน (15 วันล่าสุด) แยกตามประเภท";
+    document.getElementById("trendSub").textContent = model.dates.length
+      ? `หน่วย: กก./ตร.ซม. (ksc) — ค่าเฉลี่ยต่อวัน รวมทุกประเภทชิ้นงาน (ไม่ผูกกับแท็บด้านบน) · ช่วงวันที่: ${model.dates[0]} ถึง ${model.dates[model.dates.length - 1]}`
+      : "หน่วย: กก./ตร.ซม. (ksc) — ค่าเฉลี่ยต่อวัน รวมทุกประเภทชิ้นงาน (ไม่ผูกกับแท็บด้านบน)";
+
     const legend = document.getElementById("trendLegend");
     legend.innerHTML = model.series.map(s => `
       <span class="item"><span class="swatch" style="background:${colorFor(s.type)}"></span>${s.type}</span>
@@ -516,7 +562,7 @@
 
     const trendEl = document.getElementById("trendChart");
     if (!model.dates.length) {
-      trendEl.innerHTML = `<div class="empty">ยังไม่มีข้อมูลเพียงพอสำหรับกราฟแนวโน้ม</div>`;
+      trendEl.innerHTML = `<div class="empty">ไม่มีข้อมูลกำลังอัดในช่วงวันที่ที่เลือก</div>`;
       return;
     }
 
@@ -554,13 +600,14 @@
     };
   }
 
-  // ส่งออกกราฟแนวโน้ม 15 วัน (รวมทุกประเภท) เป็นไฟล์ภาพ PNG
+  // ส่งออกกราฟแนวโน้ม (รวมทุกประเภท) เป็นไฟล์ภาพ PNG — ใช้ช่วงวันที่เดียวกับที่แสดงอยู่บนหน้าเว็บ
   // สร้าง SVG แบบ standalone ใหม่ทั้งหมด (ฝังสีจริงแทน CSS var ที่ SVG เดี่ยว ๆ อ่านไม่ได้)
   // แล้วแรสเตอร์ไรซ์ผ่าน canvas เพราะหน้านี้ไม่มีไลบรารีสร้างภาพภายนอกใด ๆ
   function exportTrendChartAsImage() {
-    const model = computeTrendData(allRows); // รวมทุกประเภทเสมอ ไม่ผูกกับแท็บที่เลือกอยู่
+    const custom = hasCustomRange();
+    const model = computeTrendData(trendChartRows(), !custom); // รวมทุกประเภทเสมอ ไม่ผูกกับแท็บที่เลือกอยู่
     if (!model.dates.length) {
-      alert("ยังไม่มีข้อมูลเพียงพอสำหรับส่งออกกราฟแนวโน้ม");
+      alert("ไม่มีข้อมูลกำลังอัดในช่วงวันที่ที่เลือก ไม่สามารถส่งออกกราฟได้");
       return;
     }
 
@@ -588,10 +635,13 @@
     });
 
     const dateRangeLabel = `${model.dates[0]} ถึง ${model.dates[model.dates.length - 1]}`;
+    const titleText = custom
+      ? "แนวโน้มกำลังอัดรายวัน (ช่วงที่เลือก) แยกตามประเภท (รวมทุกประเภท)"
+      : "แนวโน้มกำลังอัดรายวัน 15 วันล่าสุด แยกตามประเภท (รวมทุกประเภท)";
 
     const svgString = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${totalH}" width="${width}" height="${totalH}" font-family="system-ui, 'Segoe UI', 'Sarabun', sans-serif">
   <rect x="0" y="0" width="${width}" height="${totalH}" fill="${colors.surface}" />
-  <text x="16" y="26" font-size="16" font-weight="600" fill="${colors.text}">แนวโน้มกำลังอัดรายวัน 15 วันล่าสุด แยกตามประเภท (รวมทุกประเภท)</text>
+  <text x="16" y="26" font-size="16" font-weight="600" fill="${colors.text}">${escapeXml(titleText)}</text>
   <text x="16" y="42" font-size="12" fill="${colors.textSecondary}">หน่วย: กก./ตร.ซม. (ksc) — ค่าเฉลี่ยต่อวัน · ช่วงวันที่: ${escapeXml(dateRangeLabel)}</text>
   ${legendSvg}
   ${chartInner}
@@ -614,7 +664,7 @@
         const dlUrl = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = dlUrl;
-        link.download = `rmc3-trend-15day-${model.dates[model.dates.length - 1]}.png`;
+        link.download = `rmc3-trend-${model.dates[0]}_to_${model.dates[model.dates.length - 1]}.png`;
         document.body.appendChild(link);
         link.click();
         link.remove();
@@ -629,7 +679,8 @@
   }
 
   function rowsForActiveCategory() {
-    return activeCategory ? allRows.filter(r => r.element_type === activeCategory) : allRows;
+    const inRange = applyDateRange(allRows);
+    return activeCategory ? inRange.filter(r => r.element_type === activeCategory) : inRange;
   }
 
   function renderTable() {
@@ -677,12 +728,15 @@
   }
 
   function buildTabs() {
-    const elementTypes = [...new Set(allRows.map(r => r.element_type).filter(Boolean))];
+    // ใช้ลำดับประเภทคงที่ของทั้งหน้า (ไม่ใช่ derive จาก allRows สด ๆ) และนับจากข้อมูลที่อยู่ใน
+    // ช่วงวันที่ที่เลือกอยู่ตอนนี้ (ถ้าไม่ได้เลือกช่วง ก็เท่ากับ allRows ทั้งหมดเหมือนเดิม)
+    const inRange = applyDateRange(allRows);
+    const elementTypes = Object.keys(categoryColorIndex);
     const tabsEl = document.getElementById("categoryTabs");
 
     const tabs = [
-      { value: "", label: "ทั้งหมด", count: allRows.length },
-      ...elementTypes.map(t => ({ value: t, label: t, count: allRows.filter(r => r.element_type === t).length })),
+      { value: "", label: "ทั้งหมด", count: inRange.length },
+      ...elementTypes.map(t => ({ value: t, label: t, count: inRange.filter(r => r.element_type === t).length })),
     ];
 
     tabsEl.innerHTML = tabs.map(t => `
@@ -713,6 +767,14 @@
     renderTable();
   }
 
+  // ช่วงวันที่ที่เลือกมีผลกับ "ทั้งหน้า" -- ต้องสร้างแท็บใหม่ (นับจำนวนใหม่), รีเฟรช KPI/กราฟแท่ง/
+  // ตารางตามแท็บที่เลือกอยู่, และรีเฟรชกราฟแนวโน้ม (ซึ่งผูกกับช่วงวันที่โดยตรง ไม่ผูกกับแท็บ)
+  function onDateRangeChange() {
+    buildTabs();
+    onCategoryChange();
+    buildTrendChart(trendChartRows());
+  }
+
   function setupFilters() {
     buildTabs();
     document.getElementById("filterSearch").addEventListener("input", renderTable);
@@ -726,6 +788,16 @@
     });
 
     document.getElementById("exportTrendBtn").addEventListener("click", exportTrendChartAsImage);
+
+    const fromEl = document.getElementById("dateFrom");
+    const toEl = document.getElementById("dateTo");
+    fromEl.addEventListener("change", () => { rangeFrom = fromEl.value; onDateRangeChange(); });
+    toEl.addEventListener("change", () => { rangeTo = toEl.value; onDateRangeChange(); });
+    document.getElementById("dateRangeClear").addEventListener("click", () => {
+      rangeFrom = ""; rangeTo = "";
+      fromEl.value = ""; toEl.value = "";
+      onDateRangeChange();
+    });
   }
 
   function setupTheme() {
@@ -751,7 +823,7 @@
       buildCategoryColorMap();
       setupFilters();
       onCategoryChange();
-      buildTrendChart(allRows); // กราฟแนวโน้มรวมทุกประเภทเสมอ ไม่ผูกกับแท็บที่เลือก
+      buildTrendChart(trendChartRows()); // กราฟแนวโน้มรวมทุกประเภทเสมอ ไม่ผูกกับแท็บ แต่ผูกกับช่วงวันที่
     } catch (err) {
       const statusEl = document.getElementById("status");
       statusEl.className = "error";
