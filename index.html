@@ -95,6 +95,15 @@
   svg .grid-line { stroke: var(--gridline); stroke-width: 1; }
   .bar { cursor: pointer; }
   .bar:hover { opacity: 0.85; }
+  .trend-point { cursor: pointer; }
+  .trend-point:hover { opacity: 0.7; }
+
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .btn-outline {
+    font-family: inherit; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary);
+    border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .btn-outline:hover { color: var(--text-primary); }
 
   #tooltip {
     position: fixed; pointer-events: none; background: var(--text-primary); color: var(--surface-1);
@@ -166,6 +175,18 @@
       </div>
 
       <div class="card">
+        <div class="card-head">
+          <div>
+            <h2>แนวโน้มกำลังอัดรายวัน (15 วันล่าสุด) แยกตามประเภท</h2>
+            <p class="sub" id="trendSub">หน่วย: กก./ตร.ซม. (ksc) — ค่าเฉลี่ยต่อวัน รวมทุกประเภทชิ้นงาน (ไม่ผูกกับแท็บด้านบน)</p>
+          </div>
+          <button class="btn-outline" id="exportTrendBtn" type="button">ส่งออกเป็นภาพ (PNG)</button>
+        </div>
+        <div class="legend" id="trendLegend"></div>
+        <div id="trendChart"></div>
+      </div>
+
+      <div class="card">
         <h2>รายการผลทดสอบ<span id="tableTitleSuffix"></span></h2>
         <p class="sub">แถบสีแดงด้านซ้าย = ค่ากำลังอัดต่ำผิดปกติ (&lt; 5 ksc) ควรตรวจสอบ</p>
         <div class="filters">
@@ -213,12 +234,30 @@
   const TABLE = "concrete_test_results";
   const SUSPECT_THRESHOLD = 5.0;
 
-  const SERIES_COLORS = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
+  const SERIES_COUNT = 4;
 
   let allRows = [];
   let activeCategory = ""; // "" = ทุกประเภท
   let sortKey = "test_date";
   let sortDir = -1;
+  // ประเภทชิ้นงาน -> index สี คงที่ตลอดทั้งหน้า (คำนวณครั้งเดียวจากข้อมูลทั้งหมด)
+  // เพื่อให้สีของแต่ละประเภทเหมือนกันทุกกราฟ/ทุกแท็บ ไม่ขึ้นกับลำดับที่ถูกกรอง
+  let categoryColorIndex = {};
+
+  function colorFor(type) {
+    const idx = categoryColorIndex[type] ?? 0;
+    return `var(--series-${(idx % SERIES_COUNT) + 1})`;
+  }
+
+  function buildCategoryColorMap() {
+    const allTypes = [...new Set(allRows.map(r => r.element_type).filter(Boolean))].sort();
+    categoryColorIndex = {};
+    allTypes.forEach((t, i) => { categoryColorIndex[t] = i; });
+  }
+
+  function escapeXml(s) {
+    return String(s).replace(/[<>&'"]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]));
+  }
 
   async function fetchRows() {
     const url = `${SUPABASE_URL}/rest/v1/${TABLE}?select=*&order=test_date.desc,test_no.desc&limit=5000`;
@@ -265,12 +304,14 @@
   }
 
   function buildChart(rows) {
-    const elementTypes = [...new Set(rows.map(r => r.element_type).filter(Boolean))];
-    // cap categorical series at 4 per the series-count ladder; extras fold into "อื่น ๆ"
-    const cappedTypes = elementTypes.slice(0, 4);
+    // stable global order (by categoryColorIndex) so colors never shift when a tab filters rows down
+    const presentTypes = new Set(rows.map(r => r.element_type).filter(Boolean));
+    const orderedTypes = Object.keys(categoryColorIndex).filter(t => presentTypes.has(t));
+    // cap categorical series at 4 per the series-count ladder
+    const cappedTypes = orderedTypes.slice(0, SERIES_COUNT);
     const legend = document.getElementById("legend");
-    legend.innerHTML = cappedTypes.map((t, i) => `
-      <span class="item"><span class="swatch" style="background:${SERIES_COLORS[i]}"></span>${t}</span>
+    legend.innerHTML = cappedTypes.map(t => `
+      <span class="item"><span class="swatch" style="background:${colorFor(t)}"></span>${t}</span>
     `).join("");
 
     // group by age (ordered by age_days) x element_type -> avg strength
@@ -329,7 +370,7 @@
         const x = startX + ti * barW;
         const y = padTop + plotH - barH;
         if (s) {
-          barsSvg += `<rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(barW - 2).toFixed(1)}" height="${Math.max(barH, 1).toFixed(1)}" rx="4" fill="${SERIES_COLORS[ti]}"
+          barsSvg += `<rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(barW - 2).toFixed(1)}" height="${Math.max(barH, 1).toFixed(1)}" rx="4" fill="${colorFor(type)}"
             data-label="${type} · อายุ ${ageLabel}: ${fmtNum(val)} ksc (n=${s.count})"></rect>`;
         }
       });
@@ -358,6 +399,233 @@
       });
       bar.addEventListener("mouseleave", () => { tooltip.style.opacity = 0; });
     });
+  }
+
+  // ------------------------------------------------------------------
+  // กราฟแนวโน้มรายวัน 15 วันล่าสุด แยกตามประเภท (รวมทุกประเภทเสมอ ไม่ผูกกับแท็บ)
+  // ------------------------------------------------------------------
+  function computeTrendData(rows) {
+    const byDate = new Map(); // date -> { type: {sum, count} }
+    for (const r of rows) {
+      if (r.strength_ksc === null || r.strength_ksc === undefined) continue;
+      if (!r.test_date) continue;
+      const type = r.element_type || "ไม่ระบุ";
+      if (!byDate.has(r.test_date)) byDate.set(r.test_date, {});
+      const cell = byDate.get(r.test_date);
+      if (!cell[type]) cell[type] = { sum: 0, count: 0 };
+      cell[type].sum += Number(r.strength_ksc);
+      cell[type].count += 1;
+    }
+
+    const dates = [...byDate.keys()].sort().slice(-15); // 15 วันล่าสุดที่มีข้อมูลจริง
+    const typesPresent = new Set();
+    dates.forEach(d => Object.keys(byDate.get(d)).forEach(t => typesPresent.add(t)));
+    // เรียงตามลำดับสีคงที่ของทั้งหน้า เพื่อให้ตรงกับ legend ของกราฟแท่งและแท็บ
+    const orderedTypes = [...Object.keys(categoryColorIndex), ...typesPresent].filter((t, i, arr) => arr.indexOf(t) === i);
+    const types = orderedTypes.filter(t => typesPresent.has(t));
+
+    let maxVal = 0;
+    const series = types.map(type => {
+      const points = dates.map(d => {
+        const cell = byDate.get(d)[type];
+        if (!cell) return null;
+        const avg = cell.sum / cell.count;
+        maxVal = Math.max(maxVal, avg);
+        return { avg, count: cell.count };
+      });
+      return { type, points };
+    });
+    maxVal = Math.ceil(maxVal / 50) * 50 || 50;
+
+    return { dates, series, maxVal };
+  }
+
+  function fmtDateShort(iso) {
+    const parts = String(iso).split("-");
+    if (parts.length !== 3) return iso;
+    return `${parts[2]}/${parts[1]}`;
+  }
+
+  // สร้างเนื้อหากราฟ (grid/axis/เส้น/จุด/label) เป็น SVG string ใช้ร่วมกันทั้งแสดงบนหน้าเว็บ
+  // และตอนส่งออกเป็นภาพ (ตอนส่งออกจะส่ง strokeOverrides มาด้วยเพราะ SVG แบบ standalone
+  // อ่าน CSS var()/class จาก <style> ของหน้าเว็บไม่ได้ ต้องฝังสีจริงลงไปตรง ๆ)
+  function buildTrendChartInner(model, opts) {
+    const { colorFn, yOffset, width, chartH, strokeOverrides } = opts;
+    const padTop = 20, padBottom = 40, padLeft = 44;
+    const plotH = chartH - padTop - padBottom;
+    const padRight = 34; // เว้นขอบขวาให้ label วันที่จุดสุดท้าย (text-anchor:middle) ไม่โดนตัด
+    const plotW = width - padLeft - padRight;
+    const n = model.dates.length;
+    const xFor = i => padLeft + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+    const yFor = v => padTop + plotH - (v / model.maxVal) * plotH;
+
+    const gridAttr = strokeOverrides ? ` stroke="${strokeOverrides.grid}"` : "";
+    const axisAttr = strokeOverrides ? ` stroke="${strokeOverrides.axis}"` : "";
+    const textAttr = strokeOverrides ? ` fill="${strokeOverrides.text}"` : "";
+
+    let gridSvg = "";
+    const yTicks = 4;
+    for (let i = 0; i <= yTicks; i++) {
+      const v = (model.maxVal / yTicks) * i;
+      const y = yFor(v) + yOffset;
+      gridSvg += `<line class="grid-line"${gridAttr} x1="${padLeft}" x2="${width}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />`;
+      gridSvg += `<text${textAttr} x="${padLeft - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end">${Math.round(v)}</text>`;
+    }
+
+    let labelsSvg = "";
+    model.dates.forEach((d, i) => {
+      // ลดจำนวน label ที่แสดงถ้าจุดเยอะ กันตัวอักษรทับกัน
+      if (n > 10 && i % 2 !== 0 && i !== n - 1) return;
+      const x = xFor(i);
+      labelsSvg += `<text${textAttr} x="${x.toFixed(1)}" y="${(yOffset + chartH - padBottom + 20).toFixed(1)}" text-anchor="middle">${escapeXml(fmtDateShort(d))}</text>`;
+    });
+
+    let linesSvg = "";
+    let pointsSvg = "";
+    model.series.forEach(s => {
+      const color = colorFn(s.type);
+      let path = "";
+      s.points.forEach((p, i) => {
+        if (!p) return;
+        const x = xFor(i), y = yFor(p.avg) + yOffset;
+        path += (path ? " L " : "M ") + x.toFixed(1) + "," + y.toFixed(1);
+      });
+      if (path) linesSvg += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" />`;
+      s.points.forEach((p, i) => {
+        if (!p) return;
+        const x = xFor(i), y = yFor(p.avg) + yOffset;
+        pointsSvg += `<circle class="trend-point" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="${color}"
+          data-label="${escapeXml(s.type)} · ${escapeXml(model.dates[i])}: ${fmtNum(p.avg)} ksc (n=${p.count})"></circle>`;
+      });
+    });
+
+    const axisSvg = `
+      <line class="axis-line"${axisAttr} x1="${padLeft}" x2="${padLeft}" y1="${(yOffset + padTop).toFixed(1)}" y2="${(yOffset + padTop + plotH).toFixed(1)}" />
+      <line class="axis-line"${axisAttr} x1="${padLeft}" x2="${width}" y1="${(yOffset + padTop + plotH).toFixed(1)}" y2="${(yOffset + padTop + plotH).toFixed(1)}" />
+    `;
+
+    return gridSvg + axisSvg + linesSvg + pointsSvg + labelsSvg;
+  }
+
+  function buildTrendChart(rows) {
+    const model = computeTrendData(rows);
+    const legend = document.getElementById("trendLegend");
+    legend.innerHTML = model.series.map(s => `
+      <span class="item"><span class="swatch" style="background:${colorFor(s.type)}"></span>${s.type}</span>
+    `).join("");
+
+    const trendEl = document.getElementById("trendChart");
+    if (!model.dates.length) {
+      trendEl.innerHTML = `<div class="empty">ยังไม่มีข้อมูลเพียงพอสำหรับกราฟแนวโน้ม</div>`;
+      return;
+    }
+
+    const width = 1000, chartH = 260;
+    const inner = buildTrendChartInner(model, { colorFn: colorFor, yOffset: 0, width, chartH, strokeOverrides: null });
+    trendEl.innerHTML = `
+      <svg viewBox="0 0 ${width} ${chartH}" width="100%" height="${chartH}" role="img" aria-label="กราฟแนวโน้มกำลังอัดรายวัน 15 วันล่าสุด แยกตามประเภท">
+        ${inner}
+      </svg>
+    `;
+
+    const tooltip = document.getElementById("tooltip");
+    trendEl.querySelectorAll(".trend-point").forEach(pt => {
+      pt.addEventListener("mousemove", (e) => {
+        tooltip.textContent = pt.getAttribute("data-label");
+        tooltip.style.left = (e.clientX + 12) + "px";
+        tooltip.style.top = (e.clientY + 12) + "px";
+        tooltip.style.opacity = 1;
+      });
+      pt.addEventListener("mouseleave", () => { tooltip.style.opacity = 0; });
+    });
+  }
+
+  function resolveThemeColors() {
+    const root = document.querySelector(".viz-root");
+    const cs = getComputedStyle(root);
+    const get = name => cs.getPropertyValue(name).trim();
+    return {
+      surface: get("--surface-1"),
+      text: get("--text-primary"),
+      textSecondary: get("--text-secondary"),
+      gridline: get("--gridline"),
+      baseline: get("--baseline"),
+      series: [get("--series-1"), get("--series-2"), get("--series-3"), get("--series-4")],
+    };
+  }
+
+  // ส่งออกกราฟแนวโน้ม 15 วัน (รวมทุกประเภท) เป็นไฟล์ภาพ PNG
+  // สร้าง SVG แบบ standalone ใหม่ทั้งหมด (ฝังสีจริงแทน CSS var ที่ SVG เดี่ยว ๆ อ่านไม่ได้)
+  // แล้วแรสเตอร์ไรซ์ผ่าน canvas เพราะหน้านี้ไม่มีไลบรารีสร้างภาพภายนอกใด ๆ
+  function exportTrendChartAsImage() {
+    const model = computeTrendData(allRows); // รวมทุกประเภทเสมอ ไม่ผูกกับแท็บที่เลือกอยู่
+    if (!model.dates.length) {
+      alert("ยังไม่มีข้อมูลเพียงพอสำหรับส่งออกกราฟแนวโน้ม");
+      return;
+    }
+
+    const colors = resolveThemeColors();
+    const colorFn = type => colors.series[(categoryColorIndex[type] ?? 0) % SERIES_COUNT];
+
+    const width = 1000;
+    const titleH = 50, legendH = 34, chartH = 260;
+    const totalH = titleH + legendH + chartH + 16;
+
+    let legendSvg = "";
+    const legendItemW = Math.max(width / Math.max(model.series.length, 1), 140);
+    model.series.forEach((s, i) => {
+      const cx = 16 + i * legendItemW;
+      legendSvg += `<circle cx="${cx}" cy="${titleH + 10}" r="5" fill="${colorFn(s.type)}" />`;
+      legendSvg += `<text x="${cx + 12}" y="${titleH + 14}" font-size="12" fill="${colors.textSecondary}">${escapeXml(s.type)}</text>`;
+    });
+
+    const chartInner = buildTrendChartInner(model, {
+      colorFn,
+      yOffset: titleH + legendH,
+      width,
+      chartH,
+      strokeOverrides: { grid: colors.gridline, axis: colors.baseline, text: colors.textSecondary },
+    });
+
+    const dateRangeLabel = `${model.dates[0]} ถึง ${model.dates[model.dates.length - 1]}`;
+
+    const svgString = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${totalH}" width="${width}" height="${totalH}" font-family="system-ui, 'Segoe UI', 'Sarabun', sans-serif">
+  <rect x="0" y="0" width="${width}" height="${totalH}" fill="${colors.surface}" />
+  <text x="16" y="26" font-size="16" font-weight="600" fill="${colors.text}">แนวโน้มกำลังอัดรายวัน 15 วันล่าสุด แยกตามประเภท (รวมทุกประเภท)</text>
+  <text x="16" y="42" font-size="12" fill="${colors.textSecondary}">หน่วย: กก./ตร.ซม. (ksc) — ค่าเฉลี่ยต่อวัน · ช่วงวันที่: ${escapeXml(dateRangeLabel)}</text>
+  ${legendSvg}
+  ${chartInner}
+</svg>`;
+
+    const svgBlob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = () => {
+      const scale = 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = width * scale;
+      canvas.height = totalH * scale;
+      const ctx = canvas.getContext("2d");
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0, width, totalH);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(blob => {
+        if (!blob) { alert("ส่งออกภาพไม่สำเร็จ กรุณาลองใหม่"); return; }
+        const dlUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = dlUrl;
+        link.download = `rmc3-trend-15day-${model.dates[model.dates.length - 1]}.png`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(dlUrl);
+      }, "image/png");
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      alert("ส่งออกภาพไม่สำเร็จ กรุณาลองใหม่ (อาจเป็นเพราะเบราว์เซอร์บล็อกการสร้างภาพ)");
+    };
+    img.src = url;
   }
 
   function rowsForActiveCategory() {
@@ -456,6 +724,8 @@
         renderTable();
       });
     });
+
+    document.getElementById("exportTrendBtn").addEventListener("click", exportTrendChartAsImage);
   }
 
   function setupTheme() {
@@ -478,8 +748,10 @@
       document.getElementById("content").style.display = "block";
       document.getElementById("lastUpdated").textContent =
         `ข้อมูล ${allRows.length.toLocaleString("th-TH")} รายการ · โหลดล่าสุด ${new Date().toLocaleString("th-TH")}`;
+      buildCategoryColorMap();
       setupFilters();
       onCategoryChange();
+      buildTrendChart(allRows); // กราฟแนวโน้มรวมทุกประเภทเสมอ ไม่ผูกกับแท็บที่เลือก
     } catch (err) {
       const statusEl = document.getElementById("status");
       statusEl.className = "error";
