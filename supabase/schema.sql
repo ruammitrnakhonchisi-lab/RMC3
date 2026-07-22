@@ -34,16 +34,21 @@ create index if not exists idx_concrete_test_results_element_type
 -- Row Level Security
 -- ใช้ secret key (sb_secret_...) ใน GitHub Actions สำหรับ import/upsert ซึ่ง key
 -- ชนิดนี้ทำงานเทียบเท่า service_role คือ "bypass RLS" โดยอัตโนมัติอยู่แล้ว
--- จึงไม่ต้องเปิด policy ให้ role "anon" เลย -- เปิด RLS ไว้เฉย ๆ ก็เพียงพอ ทำให้
--- ตารางนี้เข้าถึงไม่ได้เลยจาก client ฝั่งเบราว์เซอร์ที่ถือ publishable/anon key
--- (ปลอดภัยกว่าเดิม เพราะ workflow อื่นจะเขียนข้อมูลลงตารางนี้ไม่ได้แม้จะมี anon key หลุดไป)
+-- จึงไม่ต้องเปิด policy insert/update ให้ role "anon" เลย
 --
--- ถ้าในอนาคตอยากทำหน้าเว็บ/แอปที่อ่านข้อมูลจากตารางนี้ตรง ๆ ด้วย publishable key
--- (เช่น ทำ dashboard ฝั่ง frontend) ค่อยมาเปิด policy "for select to anon" เพิ่มทีหลัง
+-- แต่เปิด policy "select" (อ่านอย่างเดียว) ให้ anon ไว้ เพราะหน้าเว็บ dashboard
+-- (index.html, GitHub Pages) ใช้ publishable/anon key ฝั่ง client อ่านข้อมูลมาแสดงผล
+-- -- นี่ปลอดภัย เพราะ anon ยังเขียน/แก้/ลบข้อมูลอะไรไม่ได้เลย (ไม่มี policy insert/update/delete)
 -- ----------------------------------------------------------------------------
 alter table public.concrete_test_results enable row level security;
 
 drop policy if exists "anon can insert" on public.concrete_test_results;
 drop policy if exists "anon can update (upsert)" on public.concrete_test_results;
 drop policy if exists "anon can read" on public.concrete_test_results;
--- ไม่สร้าง policy ใด ๆ ให้ anon -- เข้าถึงตารางนี้ได้เฉพาะผ่าน secret/service_role key เท่านั้น
+
+create policy "anon can read"
+    on public.concrete_test_results
+    for select
+    to anon
+    using (true);
+-- ไม่มี policy insert/update/delete ให้ anon -- เขียนข้อมูลได้เฉพาะผ่าน secret key เท่านั้น

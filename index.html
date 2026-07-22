@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RMC3 — รายงานผลทดสอบกำลังอัดคอนกรีต</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page-plane:     #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --good:           #0ca30c;
+    --critical:       #d03b3b;
+    --series-1:       #2a78d6; /* Plank */
+    --series-2:       #eb6834; /* Pile i 22x22 */
+    --series-3:       #1baf7a; /* Pile i 18x18 */
+    --series-4:       #eda100; /* Test Mix Concrete / other */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page-plane:     #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --good:           #0ca30c;
+      --critical:       #e66767;
+      --series-1:       #3987e5;
+      --series-2:       #d95926;
+      --series-3:       #199e70;
+      --series-4:       #c98500;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page-plane:     #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --good:           #0ca30c;
+    --critical:       #e66767;
+    --series-1:       #3987e5;
+    --series-2:       #d95926;
+    --series-3:       #199e70;
+    --series-4:       #c98500;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", "Sarabun", sans-serif; }
+  /* .viz-root carries the page background itself so dark-mode variables (scoped to
+     .viz-root, per the palette doc) actually take effect -- body sits outside that
+     scope and can't see custom properties defined further down the tree. */
+  .viz-root { min-height: 100vh; background: var(--page-plane); color: var(--text-primary); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 16px 64px; }
+
+  header.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 20px; }
+  header.top h1 { font-size: 20px; margin: 0; }
+  header.top .meta { color: var(--text-secondary); font-size: 13px; }
+  .theme-toggle {
+    border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary);
+    border-radius: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .kpi-tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .kpi-tile .label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+  .kpi-tile .value { font-size: 26px; font-weight: 600; }
+  .kpi-tile .value.critical { color: var(--critical); }
+
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 24px; }
+  .card h2 { font-size: 15px; margin: 0 0 4px; }
+  .card .sub { font-size: 12px; color: var(--text-secondary); margin: 0 0 16px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; font-size: 12px; color: var(--text-secondary); }
+  .legend .item { display: flex; align-items: center; gap: 6px; }
+  .legend .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+  svg text { fill: var(--text-secondary); font-size: 11px; }
+  svg .axis-line { stroke: var(--baseline); stroke-width: 1; }
+  svg .grid-line { stroke: var(--gridline); stroke-width: 1; }
+  .bar { cursor: pointer; }
+  .bar:hover { opacity: 0.85; }
+
+  #tooltip {
+    position: fixed; pointer-events: none; background: var(--text-primary); color: var(--surface-1);
+    font-size: 12px; padding: 6px 10px; border-radius: 6px; opacity: 0; transition: opacity 0.1s;
+    z-index: 50; white-space: nowrap;
+  }
+
+  .filters { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .filters select, .filters input {
+    font-family: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align: left; font-weight: 600; color: var(--text-secondary); font-size: 12px;
+    border-bottom: 1px solid var(--gridline); padding: 8px 10px; cursor: pointer; white-space: nowrap;
+  }
+  thead th:hover { color: var(--text-primary); }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--gridline); font-variant-numeric: tabular-nums; }
+  tbody tr.suspect td:first-child { box-shadow: inset 3px 0 0 var(--critical); }
+  tbody tr.suspect .flag { color: var(--critical); font-weight: 600; font-size: 11px; margin-left: 6px; }
+  .table-scroll { max-height: 480px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .table-scroll thead th { position: sticky; top: 0; background: var(--surface-1); }
+
+  .empty, .loading, .error { color: var(--text-secondary); font-size: 13px; padding: 24px 0; text-align: center; }
+  .error { color: var(--critical); }
+  footer { color: var(--text-muted); font-size: 12px; text-align: center; margin-top: 12px; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+  <div class="wrap">
+    <header class="top">
+      <div>
+        <h1>รายงานผลทดสอบกำลังอัดคอนกรีต — RMC3</h1>
+        <div class="meta" id="lastUpdated">กำลังโหลดข้อมูลจาก Supabase…</div>
+      </div>
+      <button class="theme-toggle" id="themeToggle" type="button">โหมดมืด/สว่าง</button>
+    </header>
+
+    <div id="status" class="loading">กำลังดึงข้อมูล…</div>
+
+    <div id="content" style="display:none;">
+      <div class="kpi-row" id="kpiRow"></div>
+
+      <div class="card">
+        <h2>ค่ากำลังอัดเฉลี่ยตามประเภทชิ้นงาน / อายุคอนกรีต</h2>
+        <p class="sub">หน่วย: กก./ตร.ซม. (ksc) — เรียงอายุจากน้อยไปมาก</p>
+        <div class="legend" id="legend"></div>
+        <div id="chart"></div>
+      </div>
+
+      <div class="card">
+        <h2>รายการผลทดสอบทั้งหมด</h2>
+        <p class="sub">แถบสีแดงด้านซ้าย = ค่ากำลังอัดต่ำผิดปกติ (&lt; 5 ksc) ควรตรวจสอบ</p>
+        <div class="filters">
+          <select id="filterElement"><option value="">ทุกประเภทชิ้นงาน</option></select>
+          <input id="filterSearch" type="text" placeholder="ค้นหา Test No. / ไฟล์ต้นทาง…">
+        </div>
+        <div class="table-scroll">
+          <table id="dataTable">
+            <thead>
+              <tr>
+                <th data-key="test_no">Test No.</th>
+                <th data-key="test_date">วันที่</th>
+                <th data-key="element_type">ประเภทชิ้นงาน</th>
+                <th data-key="age_label">อายุ</th>
+                <th data-key="specimen_no">ตัวอย่างที่</th>
+                <th data-key="slump_cm">ยุบตัว (ซม.)</th>
+                <th data-key="weight_kg">น้ำหนัก (กก.)</th>
+                <th data-key="strength_ksc">กำลังอัด (ksc)</th>
+                <th data-key="source_file">ไฟล์ต้นทาง</th>
+              </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      ข้อมูลดึงตรงจาก Supabase (public.concrete_test_results) ผ่าน publishable key —
+      อ่านอย่างเดียว แก้ไขข้อมูลไม่ได้จากหน้านี้ ·
+      <a href="https://github.com/ruammitrnakhonchisi-lab/RMC3" target="_blank" rel="noopener">ดูซอร์สโค้ด</a>
+    </footer>
+  </div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+  // ------------------------------------------------------------------
+  // ตั้งค่าการเชื่อมต่อ Supabase
+  // ใช้ publishable/anon key เท่านั้น (อ่านข้อมูลได้อย่างเดียวตาม RLS policy
+  // ที่ตั้งไว้ใน supabase/schema.sql) -- ปลอดภัยที่จะฝังในโค้ดฝั่ง client
+  // ------------------------------------------------------------------
+  const SUPABASE_URL = "https://asulsstgrtbwtddopngw.supabase.co";
+  const SUPABASE_ANON_KEY = "sb_publishable_R00W167FeQu0P1mKiPHi4g_5lycDV_k";
+  const TABLE = "concrete_test_results";
+  const SUSPECT_THRESHOLD = 5.0;
+
+  const SERIES_COLORS = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
+
+  let allRows = [];
+  let sortKey = "test_date";
+  let sortDir = -1;
+
+  async function fetchRows() {
+    const url = `${SUPABASE_URL}/rest/v1/${TABLE}?select=*&order=test_date.desc,test_no.desc&limit=5000`;
+    const resp = await fetch(url, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+    });
+    if (!resp.ok) {
+      throw new Error(`Supabase ตอบกลับ ${resp.status}: ${await resp.text()}`);
+    }
+    return resp.json();
+  }
+
+  function fmtNum(n, digits = 1) {
+    if (n === null || n === undefined || Number.isNaN(n)) return "-";
+    return Number(n).toLocaleString("th-TH", { maximumFractionDigits: digits, minimumFractionDigits: digits });
+  }
+
+  function buildKPIs(rows) {
+    const withStrength = rows.filter(r => r.strength_ksc !== null && r.strength_ksc !== undefined);
+    const avg = withStrength.length
+      ? withStrength.reduce((s, r) => s + Number(r.strength_ksc), 0) / withStrength.length
+      : null;
+    const suspects = withStrength.filter(r => Number(r.strength_ksc) < SUSPECT_THRESHOLD);
+    const dates = rows.map(r => r.test_date).filter(Boolean).sort();
+    const dateRange = dates.length ? `${dates[0]} ถึง ${dates[dates.length - 1]}` : "-";
+
+    const tiles = [
+      { label: "จำนวนตัวอย่างทั้งหมด", value: rows.length.toLocaleString("th-TH") },
+      { label: "ค่ากำลังอัดเฉลี่ย (ksc)", value: fmtNum(avg) },
+      { label: "ค่าผิดปกติ (< 5 ksc)", value: suspects.length.toLocaleString("th-TH"), critical: suspects.length > 0 },
+      { label: "ช่วงวันที่ทดสอบ", value: dateRange, small: true },
+    ];
+
+    const kpiRow = document.getElementById("kpiRow");
+    kpiRow.innerHTML = tiles.map(t => `
+      <div class="kpi-tile">
+        <div class="label">${t.label}</div>
+        <div class="value ${t.critical ? "critical" : ""}" style="${t.small ? "font-size:16px;" : ""}">${t.value}</div>
+      </div>
+    `).join("");
+  }
+
+  function buildChart(rows) {
+    const elementTypes = [...new Set(rows.map(r => r.element_type).filter(Boolean))];
+    // cap categorical series at 4 per the series-count ladder; extras fold into "อื่น ๆ"
+    const cappedTypes = elementTypes.slice(0, 4);
+    const legend = document.getElementById("legend");
+    legend.innerHTML = cappedTypes.map((t, i) => `
+      <span class="item"><span class="swatch" style="background:${SERIES_COLORS[i]}"></span>${t}</span>
+    `).join("");
+
+    // group by age (ordered by age_days) x element_type -> avg strength
+    const ageMap = new Map(); // age_label -> {age_days, sums: {type: {sum,count}}}
+    for (const r of rows) {
+      if (r.strength_ksc === null || r.strength_ksc === undefined) continue;
+      const type = r.element_type;
+      if (!cappedTypes.includes(type)) continue;
+      const key = r.age_label ?? "-";
+      if (!ageMap.has(key)) ageMap.set(key, { age_days: r.age_days ?? 0, sums: {} });
+      const entry = ageMap.get(key);
+      if (!entry.sums[type]) entry.sums[type] = { sum: 0, count: 0 };
+      entry.sums[type].sum += Number(r.strength_ksc);
+      entry.sums[type].count += 1;
+    }
+    const ageGroups = [...ageMap.entries()].sort((a, b) => a[1].age_days - b[1].age_days);
+
+    if (ageGroups.length === 0) {
+      document.getElementById("chart").innerHTML = `<div class="empty">ยังไม่มีข้อมูลกำลังอัดให้แสดงกราฟ</div>`;
+      return;
+    }
+
+    const width = 1000, groupWidth = width / ageGroups.length;
+    const barW = Math.min(22, (groupWidth - 24) / cappedTypes.length);
+    const chartH = 260, padTop = 20, padBottom = 40, padLeft = 44;
+    const plotH = chartH - padTop - padBottom;
+
+    let maxVal = 0;
+    for (const [, entry] of ageGroups) {
+      for (const type of cappedTypes) {
+        const s = entry.sums[type];
+        if (s) maxVal = Math.max(maxVal, s.sum / s.count);
+      }
+    }
+    maxVal = Math.ceil(maxVal / 50) * 50 || 50;
+
+    const yTicks = 4;
+    let gridSvg = "";
+    for (let i = 0; i <= yTicks; i++) {
+      const v = (maxVal / yTicks) * i;
+      const y = padTop + plotH - (v / maxVal) * plotH;
+      gridSvg += `<line class="grid-line" x1="${padLeft}" x2="${width}" y1="${y}" y2="${y}" />`;
+      gridSvg += `<text x="${padLeft - 8}" y="${y + 4}" text-anchor="end">${Math.round(v)}</text>`;
+    }
+
+    let barsSvg = "";
+    let labelsSvg = "";
+    ageGroups.forEach(([ageLabel, entry], gi) => {
+      const groupX = gi * groupWidth;
+      const totalBarsW = barW * cappedTypes.length;
+      const startX = groupX + (groupWidth - totalBarsW) / 2;
+      cappedTypes.forEach((type, ti) => {
+        const s = entry.sums[type];
+        const val = s ? s.sum / s.count : 0;
+        const barH = (val / maxVal) * plotH;
+        const x = startX + ti * barW;
+        const y = padTop + plotH - barH;
+        if (s) {
+          barsSvg += `<rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(barW - 2).toFixed(1)}" height="${Math.max(barH, 1).toFixed(1)}" rx="4" fill="${SERIES_COLORS[ti]}"
+            data-label="${type} · อายุ ${ageLabel}: ${fmtNum(val)} ksc (n=${s.count})"></rect>`;
+        }
+      });
+      labelsSvg += `<text x="${(groupX + groupWidth / 2).toFixed(1)}" y="${chartH - padBottom + 20}" text-anchor="middle">${ageLabel}</text>`;
+    });
+
+    const svg = `
+      <svg viewBox="0 0 ${width} ${chartH}" width="100%" height="${chartH}" role="img" aria-label="กราฟค่ากำลังอัดเฉลี่ยตามประเภทชิ้นงานและอายุ">
+        ${gridSvg}
+        <line class="axis-line" x1="${padLeft}" x2="${padLeft}" y1="${padTop}" y2="${padTop + plotH}" />
+        <line class="axis-line" x1="${padLeft}" x2="${width}" y1="${padTop + plotH}" y2="${padTop + plotH}" />
+        ${barsSvg}
+        ${labelsSvg}
+      </svg>
+    `;
+    const chartEl = document.getElementById("chart");
+    chartEl.innerHTML = svg;
+
+    const tooltip = document.getElementById("tooltip");
+    chartEl.querySelectorAll(".bar").forEach(bar => {
+      bar.addEventListener("mousemove", (e) => {
+        tooltip.textContent = bar.getAttribute("data-label");
+        tooltip.style.left = (e.clientX + 12) + "px";
+        tooltip.style.top = (e.clientY + 12) + "px";
+        tooltip.style.opacity = 1;
+      });
+      bar.addEventListener("mouseleave", () => { tooltip.style.opacity = 0; });
+    });
+  }
+
+  function renderTable() {
+    const elFilter = document.getElementById("filterElement").value;
+    const search = document.getElementById("filterSearch").value.trim().toLowerCase();
+
+    let rows = allRows.filter(r => {
+      if (elFilter && r.element_type !== elFilter) return false;
+      if (search) {
+        const hay = `${r.test_no} ${r.source_file}`.toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    });
+
+    rows = rows.slice().sort((a, b) => {
+      const av = a[sortKey], bv = b[sortKey];
+      if (av === null || av === undefined) return 1;
+      if (bv === null || bv === undefined) return -1;
+      if (av < bv) return -1 * sortDir;
+      if (av > bv) return 1 * sortDir;
+      return 0;
+    });
+
+    const tbody = document.getElementById("tableBody");
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="9" class="empty">ไม่พบข้อมูลตามเงื่อนไขที่เลือก</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = rows.map(r => {
+      const suspect = r.strength_ksc !== null && r.strength_ksc !== undefined && Number(r.strength_ksc) < SUSPECT_THRESHOLD;
+      return `
+        <tr class="${suspect ? "suspect" : ""}">
+          <td>${r.test_no ?? "-"}${suspect ? `<span class="flag">ผิดปกติ</span>` : ""}</td>
+          <td>${r.test_date ?? "-"}</td>
+          <td>${r.element_type ?? "-"}</td>
+          <td>${r.age_label ?? "-"}</td>
+          <td>${r.specimen_no ?? "-"}</td>
+          <td>${fmtNum(r.slump_cm)}</td>
+          <td>${fmtNum(r.weight_kg, 3)}</td>
+          <td>${fmtNum(r.strength_ksc)}</td>
+          <td>${r.source_file ?? "-"}</td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  function setupFilters() {
+    const elementTypes = [...new Set(allRows.map(r => r.element_type).filter(Boolean))];
+    const sel = document.getElementById("filterElement");
+    sel.innerHTML = `<option value="">ทุกประเภทชิ้นงาน</option>` +
+      elementTypes.map(t => `<option value="${t}">${t}</option>`).join("");
+    sel.addEventListener("change", renderTable);
+    document.getElementById("filterSearch").addEventListener("input", renderTable);
+
+    document.querySelectorAll("thead th[data-key]").forEach(th => {
+      th.addEventListener("click", () => {
+        const key = th.getAttribute("data-key");
+        if (sortKey === key) sortDir *= -1; else { sortKey = key; sortDir = 1; }
+        renderTable();
+      });
+    });
+  }
+
+  function setupTheme() {
+    const toggle = document.getElementById("themeToggle");
+    const stored = window.__rmc3Theme || null;
+    if (stored) document.documentElement.setAttribute("data-theme", stored);
+    toggle.addEventListener("click", () => {
+      const current = document.documentElement.getAttribute("data-theme");
+      const next = current === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      window.__rmc3Theme = next;
+    });
+  }
+
+  async function main() {
+    setupTheme();
+    try {
+      allRows = await fetchRows();
+      document.getElementById("status").style.display = "none";
+      document.getElementById("content").style.display = "block";
+      document.getElementById("lastUpdated").textContent =
+        `ข้อมูล ${allRows.length.toLocaleString("th-TH")} รายการ · โหลดล่าสุด ${new Date().toLocaleString("th-TH")}`;
+      buildKPIs(allRows);
+      buildChart(allRows);
+      setupFilters();
+      renderTable();
+    } catch (err) {
+      const statusEl = document.getElementById("status");
+      statusEl.className = "error";
+      statusEl.textContent = `โหลดข้อมูลไม่สำเร็จ: ${err.message} (เช็คว่ารัน supabase/schema.sql แล้วหรือยัง และมี policy "anon can read" อยู่จริง)`;
+    }
+  }
+
+  main();
+</script>
+</body>
+</html>
