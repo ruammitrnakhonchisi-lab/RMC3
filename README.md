@@ -131,6 +131,7 @@ python scripts/generate_report.py --out reports/summary.md
 - แยก `No./Slump.` เช่น `"No.1 S.2 cm (Z)"` เป็น `specimen_no=1`, `slump_cm=2.0`, `location_code="Z"`
 
 ทดสอบกับไฟล์ตัวอย่าง `sample_data/11569.csv` (303 รายการ) แล้ว parse ได้ครบ 303 รายการตรงกับ
+0898378413
 บรรทัด `TOTAL : 303` ท้ายไฟล์พอดี โดยไม่มี label ไหนแยกไม่ออกเลย
 
 ถ้าเจอไฟล์ CSV รูปแบบใหม่ที่ parse ไม่ครบ หรือ `raw_label` แยกไม่ออก ให้ดู warning ที่ขึ้นตอนรัน
