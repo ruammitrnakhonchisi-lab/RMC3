@@ -1,0 +1,59 @@
+name: Import CSV -> Supabase
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "data/incoming/**.csv"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import CSV files into Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          shopt -s nullglob
+          files=(data/incoming/*.csv)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "ไม่มีไฟล์ CSV ใหม่ใน data/incoming/ ข้ามขั้นตอน import"
+          else
+            python scripts/import_csv.py "${files[@]}" --move-to data/processed
+          fi
+
+      - name: Generate summary report
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python scripts/generate_report.py --out reports/summary.md
+          cat reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit processed files & report back to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/incoming data/processed reports
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: import CSV results and refresh report [skip ci]"
+            git push
+          else
+            echo "ไม่มีอะไรเปลี่ยนแปลง ไม่ต้อง commit"
+          fi
