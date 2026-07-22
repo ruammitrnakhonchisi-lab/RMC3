@@ -108,6 +108,20 @@
     border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
   }
 
+  /* category tabs -- one shared filter that drives KPIs + chart + table together */
+  .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  .tab-btn {
+    font-family: inherit; font-size: 13px; padding: 7px 14px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary);
+    cursor: pointer; white-space: nowrap;
+  }
+  .tab-btn .count { color: var(--text-muted); margin-left: 4px; }
+  .tab-btn:hover { color: var(--text-primary); }
+  .tab-btn.active {
+    background: var(--series-1); border-color: var(--series-1); color: #ffffff;
+  }
+  .tab-btn.active .count { color: rgba(255,255,255,0.8); }
+
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   thead th {
     text-align: left; font-weight: 600; color: var(--text-secondary); font-size: 12px;
@@ -140,20 +154,21 @@
     <div id="status" class="loading">กำลังดึงข้อมูล…</div>
 
     <div id="content" style="display:none;">
+      <div class="tabs" id="categoryTabs"></div>
+
       <div class="kpi-row" id="kpiRow"></div>
 
       <div class="card">
         <h2>ค่ากำลังอัดเฉลี่ยตามประเภทชิ้นงาน / อายุคอนกรีต</h2>
-        <p class="sub">หน่วย: กก./ตร.ซม. (ksc) — เรียงอายุจากน้อยไปมาก</p>
+        <p class="sub" id="chartSub">หน่วย: กก./ตร.ซม. (ksc) — เรียงอายุจากน้อยไปมาก</p>
         <div class="legend" id="legend"></div>
         <div id="chart"></div>
       </div>
 
       <div class="card">
-        <h2>รายการผลทดสอบทั้งหมด</h2>
+        <h2>รายการผลทดสอบ<span id="tableTitleSuffix"></span></h2>
         <p class="sub">แถบสีแดงด้านซ้าย = ค่ากำลังอัดต่ำผิดปกติ (&lt; 5 ksc) ควรตรวจสอบ</p>
         <div class="filters">
-          <select id="filterElement"><option value="">ทุกประเภทชิ้นงาน</option></select>
           <input id="filterSearch" type="text" placeholder="ค้นหา Test No. / ไฟล์ต้นทาง…">
         </div>
         <div class="table-scroll">
@@ -201,6 +216,7 @@
   const SERIES_COLORS = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
 
   let allRows = [];
+  let activeCategory = ""; // "" = ทุกประเภท
   let sortKey = "test_date";
   let sortDir = -1;
 
@@ -344,12 +360,14 @@
     });
   }
 
+  function rowsForActiveCategory() {
+    return activeCategory ? allRows.filter(r => r.element_type === activeCategory) : allRows;
+  }
+
   function renderTable() {
-    const elFilter = document.getElementById("filterElement").value;
     const search = document.getElementById("filterSearch").value.trim().toLowerCase();
 
-    let rows = allRows.filter(r => {
-      if (elFilter && r.element_type !== elFilter) return false;
+    let rows = rowsForActiveCategory().filter(r => {
       if (search) {
         const hay = `${r.test_no} ${r.source_file}`.toLowerCase();
         if (!hay.includes(search)) return false;
@@ -390,12 +408,45 @@
     }).join("");
   }
 
-  function setupFilters() {
+  function buildTabs() {
     const elementTypes = [...new Set(allRows.map(r => r.element_type).filter(Boolean))];
-    const sel = document.getElementById("filterElement");
-    sel.innerHTML = `<option value="">ทุกประเภทชิ้นงาน</option>` +
-      elementTypes.map(t => `<option value="${t}">${t}</option>`).join("");
-    sel.addEventListener("change", renderTable);
+    const tabsEl = document.getElementById("categoryTabs");
+
+    const tabs = [
+      { value: "", label: "ทั้งหมด", count: allRows.length },
+      ...elementTypes.map(t => ({ value: t, label: t, count: allRows.filter(r => r.element_type === t).length })),
+    ];
+
+    tabsEl.innerHTML = tabs.map(t => `
+      <button type="button" class="tab-btn ${t.value === activeCategory ? "active" : ""}" data-value="${t.value}">
+        ${t.label}<span class="count">${t.count.toLocaleString("th-TH")}</span>
+      </button>
+    `).join("");
+
+    tabsEl.querySelectorAll(".tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        activeCategory = btn.getAttribute("data-value");
+        onCategoryChange();
+      });
+    });
+  }
+
+  function onCategoryChange() {
+    const rows = rowsForActiveCategory();
+    document.querySelectorAll("#categoryTabs .tab-btn").forEach(btn => {
+      btn.classList.toggle("active", btn.getAttribute("data-value") === activeCategory);
+    });
+    document.getElementById("tableTitleSuffix").textContent = activeCategory ? ` — ${activeCategory}` : "ทั้งหมด";
+    document.getElementById("chartSub").textContent = activeCategory
+      ? `หน่วย: กก./ตร.ซม. (ksc) — เฉพาะ "${activeCategory}" — เรียงอายุจากน้อยไปมาก`
+      : "หน่วย: กก./ตร.ซม. (ksc) — ทุกประเภทชิ้นงาน — เรียงอายุจากน้อยไปมาก";
+    buildKPIs(rows);
+    buildChart(rows);
+    renderTable();
+  }
+
+  function setupFilters() {
+    buildTabs();
     document.getElementById("filterSearch").addEventListener("input", renderTable);
 
     document.querySelectorAll("thead th[data-key]").forEach(th => {
@@ -427,10 +478,8 @@
       document.getElementById("content").style.display = "block";
       document.getElementById("lastUpdated").textContent =
         `ข้อมูล ${allRows.length.toLocaleString("th-TH")} รายการ · โหลดล่าสุด ${new Date().toLocaleString("th-TH")}`;
-      buildKPIs(allRows);
-      buildChart(allRows);
       setupFilters();
-      renderTable();
+      onCategoryChange();
     } catch (err) {
       const statusEl = document.getElementById("status");
       statusEl.className = "error";
